@@ -3,69 +3,133 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Validator;
+use Carbon\Carbon;
 
 class AuthController extends Controller
 {
-    // Endpoint para login (/acessar)
-    public function acessar(Request $request)
+    private $arquivoUsuarios;
+
+    public function __construct()
     {
-        // Simulando um banco de dados fictício
-        $usuarios = [
-            ['email' => 'usuario@example.com', 'senha' => '123456'],
-            ['email' => 'admin@example.com', 'senha' => 'admin123']
-        ];
+        $this->arquivoUsuarios = storage_path('app/usuarios.json');
+    }
 
-        $email = $request->input('email');
-        $senha = $request->input('senha');
-
-        // Verificando se o usuário existe
-        foreach ($usuarios as $usuario) {
-            if ($usuario['email'] === $email && $usuario['senha'] === $senha) {
-                return response()->json(['message' => 'Autenticação bem-sucedida', 'email' => $email]);
-            }
+    private function lerUsuarios()
+    {
+        // Criar arquivo se não existir
+        if (!File::exists($this->arquivoUsuarios)) {
+            File::put($this->arquivoUsuarios, json_encode([]));
         }
 
-        return response()->json(['error' => 'Usuário ou senha inválidos'], 401);
+        // Ler conteúdo do arquivo
+        $conteudo = File::get($this->arquivoUsuarios);
+        return json_decode($conteudo, true) ?: [];
+    }
+
+    private function salvarUsuarios($usuarios)
+    {
+        File::put($this->arquivoUsuarios, json_encode($usuarios, JSON_PRETTY_PRINT));
     }
 
     // Endpoint para registrar usuário (/registrar)
     public function registrar(Request $request)
     {
-        // Simulando um banco fictício com um array
-        $usuariosExistentes = ['usuario@example.com', 'admin@example.com'];
+        // Validação básica
+        $validator = Validator::make($request->all(), [
+            'email' => 'required|email',
+            'dt_nascimento' => 'required|date',
+            'senha' => 'required|min:5'
+        ]);
 
-        $email = $request->input('email');
-        $dt_nascimento = $request->input('dt_nascimento');
-        $senha = $request->input('senha');
+        // Verificar se a validação falhou
+        if ($validator->fails()) {
+            return response()->json([
+                'error' => $validator->errors()->first()
+            ], 400);
+        }
 
-        // Validando idade
-        $dataNascimento = new \DateTime($dt_nascimento);
-        $hoje = new \DateTime();
-        $idade = $hoje->diff($dataNascimento)->y;
+        $dataNascimento = Carbon::parse($request->input('dt_nascimento'));
+        $idade = $dataNascimento->age;
 
+        // Verificar se é maior de 18 anos
         if ($idade < 18) {
             return response()->json(['error' => 'Usuário deve ter pelo menos 18 anos'], 400);
         }
 
-        // Verificando se o e-mail já está registrado
-        if (in_array($email, $usuariosExistentes)) {
+        $usuarios = $this->lerUsuarios();
+
+        // Verificar se usuário já existe
+        $emailExistente = false;
+        foreach ($usuarios as $usuario) {
+            if ($usuario['email'] === $request->input('email')) {
+                $emailExistente = true;
+                break;
+            }
+        }
+
+        if ($emailExistente) {
             return response()->json(['error' => 'E-mail já cadastrado'], 400);
         }
 
-        // Simulando inserção no banco de dados fictício
-        return response()->json(['message' => 'Usuário registrado com sucesso'], 201);
+        $novoUsuario = [
+            'id' => count($usuarios) + 1,
+            'email' => $request->input('email'),
+            'senha' => password_hash($request->input('senha'), PASSWORD_DEFAULT),
+            'dt_nascimento' => $request->input('dt_nascimento')
+        ];
+        
+        $usuarios[] = $novoUsuario;
+
+        // Salvar usuários no arquivo JSON
+        $this->salvarUsuarios($usuarios);
+
+        return response()->json([
+            'message' => 'Usuário registrado com sucesso', 
+            'usuario' => $novoUsuario
+        ], 201);
+    }
+
+    // Endpoint para login (/acessar)
+    public function acessar(Request $request)
+    {
+        $email = $request->input('email');
+        $senha = $request->input('senha');
+
+        $usuarios = $this->lerUsuarios();
+
+        // Buscar usuário
+        $usuarioEncontrado = null;
+        foreach ($usuarios as $usuario) {
+            if ($usuario['email'] === $email && 
+                password_verify($senha, $usuario['senha'])) {
+                $usuarioEncontrado = $usuario;
+                break;
+            }
+        }
+
+        // Verificar se usuário foi encontrado
+        if ($usuarioEncontrado) {
+            return response()->json([
+                'message' => 'Autenticação bem-sucedida', 
+                'usuario' => $usuarioEncontrado
+            ]);
+        }
+
+        return response()->json(['error' => 'Usuário ou senha inválidos'], 401);
     }
 
     // Endpoint para listar usuários (/listagem-usuarios)
     public function listagemUsuarios()
     {
-        // Simulando um banco de dados fictício
-        $usuarios = [
-            ['id' => 1, 'email' => 'usuario@example.com', 'dt_nascimento' => '2000-01-01'],
-            ['id' => 2, 'email' => 'admin@example.com', 'dt_nascimento' => '1995-06-15']
-        ];
+        $usuarios = $this->lerUsuarios();
+        
+        $usuariosSemSenha = array_map(function($usuario) {
+            unset($usuario['senha']);
+            return $usuario;
+        }, $usuarios);
 
-        return response()->json($usuarios);
+        return response()->json($usuariosSemSenha);
     }
 }
